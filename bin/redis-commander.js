@@ -5,6 +5,7 @@ var Redis = require('ioredis');
 var app = require('../lib/app');
 var fs = require('fs');
 var myUtils = require('../lib/util');
+var cfenv = require("cfenv");
 
 var redisConnections = [];
 redisConnections.getLast = myUtils.getLast;
@@ -113,6 +114,8 @@ myUtils.getConfig(function (err, config) {
       console.log(err);
       process.exit();
     }
+    var vcap_services = JSON.parse(process.env.VCAP_SERVICES);
+    var appEnv = cfenv.getAppEnv();
     if (args['sentinel-host'] || args['redis-host'] || args['redis-port'] || args['redis-socket'] || args['redis-password']) {
       var db = parseInt(args['redis-db']);
       if (db == null || isNaN(db)) {
@@ -120,12 +123,12 @@ myUtils.getConfig(function (err, config) {
       }
 
       newDefault = {
-        "label": args['redis-label'] || "local",
-        "host": args['redis-host'] || "localhost",
+        "label": args['redis-label'] || "p-redis",
+        "host": args['redis-host'] || vcap_services.my-redis[0].credentials.host,
         "sentinel_host": args['sentinel-host'],
         "sentinel_port": args['sentinel-port'],
-        "port": args['redis-port'] || args['redis-socket'] || "6379",
-        "password": args['redis-password'] || "",
+        "port": args['redis-port'] || args['redis-socket'] || vcap_services.my-redis[0].credentials.port,
+        "password": args['redis-password'] || vcap_services.my-redis[0].credentials.password,
         "dbIndex": db
       };
 
@@ -135,7 +138,7 @@ myUtils.getConfig(function (err, config) {
 		client = new Redis({showFriendlyErrorStack: true , sentinels: [{ host: newDefault.sentinel_host, port: newDefault.sentinel_port}],name: 'mymaster' });
 	}
 	else
-           client = new Redis(newDefault.port, newDefault.host);
+           client = new Redis(newDefault.port, vcap_services.my-redis[0].credentials.host);
         client.label = newDefault.label;
         redisConnections.push(client);
         if (args['redis-password']) {
@@ -160,7 +163,18 @@ myUtils.getConfig(function (err, config) {
       if (db == null || isNaN(db)) {
         db = 0
       }
-      redisConnections.push(new Redis());
+      console.log("Before redis connect");
+      console.log("Password="+appEnv.getService("my-redis").credentials.password);
+      client = new Redis(appEnv.getService("my-redis").credentials.port, appEnv.getService("my-redis").credentials.host, {password: appEnv.getService("my-redis").credentials.password});
+      client.label = "my-redis";
+      client.auth(appEnv.getService("my-redis").credentials.password, function (err) {
+                  if (err) {
+                    console.log("Problem authenticating with " + appEnv.getService("my-redis").credentials.password );
+                    console.log(err);
+                    process.exit();
+                  }
+                });
+      redisConnections.push(client);
       setUpConnection(redisConnections.getLast(), db);
     }
   });
@@ -207,7 +221,7 @@ function connectToDB (redisConnection, db) {
 }
 
 function startWebApp () {
-  httpServerOptions = {webPort: args.port, webAddress: args.address, username: args["http-auth-username"], password: args["http-auth-password"]};
+  httpServerOptions = {webPort: process.env.PORT || 3000, webAddress: args.address, username: args["http-auth-username"], password: args["http-auth-password"]};
   console.log("No Save: " + args["nosave"]);
   app(httpServerOptions, redisConnections, args["nosave"]);
 }
